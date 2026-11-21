@@ -17,14 +17,14 @@
   var FIRST = ['font-size', 'alarm-8'];
   var HINT = { 'font-size': '설정에서 글자를 한 단계 키웁니다', 'alarm-8': '시계 앱에서 오전 8시 알람을 맞춥니다', 'bluetooth': '설정의 블루투스 화면까지 갑니다' };
   var ENDED = {
-    idle: '한동안 누른 것이 없어서 폰을 반납했어요. 다시 쓰려면 폰을 골라 주세요.',
-    gone: '페이지와 연결이 끊겨 폰을 반납했어요. 다시 쓰려면 폰을 골라 주세요.',
+    idle: '10분 동안 누른 것이 없어서 폰을 반납했어요. 다시 쓰려면 폰을 골라 주세요.',
+    gone: '페이지가 닫혀 있어서 폰을 반납했어요. 다시 쓰려면 폰을 골라 주세요.',
     moved: '다른 폰으로 옮겨서 이 폰은 반납했어요.'
   };
 
   var view = '';                 // 'lobby' | 'session'
   var timers = { lobby: 0, state: 0, events: 0 };
-  var run = -1, after = 0, steps = {}, guideState = 'idle', loaded = '', tasksKey = '', active = true, hooked = null;
+  var run = -1, after = 0, steps = {}, guideState = 'idle', loaded = '', tasksKey = '', active = true, hooked = null, misses = 0;
 
   function api(path, body) {
     var opt = body === undefined ? { cache: 'no-store', credentials: 'same-origin' }
@@ -39,12 +39,36 @@
 
   // ================================================================ 첫 화면: 폰 고르기
 
+  // 폰 목록은 서버가 바뀔 때마다 밀어 줍니다(누가 폰을 고르거나 반납하면 바로). 그 길이 끊겨도 5초마다 다시 읽습니다.
+  var feed = null;
+  function openFeed() {
+    if (feed || !window.EventSource) return;
+    feed = new EventSource(API + 'devices/stream');
+    feed.onmessage = function (ev) {
+      if (view !== 'lobby') return;
+      try { drawRack(JSON.parse(ev.data).devices); } catch (e) {}
+    };
+  }
+  function closeFeed() { if (feed) { feed.close(); feed = null; } }
+
+  // 폰을 쓰는 동안 서버와 연결 하나를 열어 둡니다. 서버는 이 연결이 살아 있는 것으로 "아직 쓰고 있다"를 압니다.
+  // 페이지의 타이머가 느려져도(창이 가려지거나 최소화될 때) 잠금이 풀리지 않게 하려는 것입니다. 끊기면 브라우저가 다시 잇습니다.
+  var hold = null;
+  function openHold() {
+    if (hold || !window.EventSource) return;
+    hold = new EventSource(API + 'hold');
+    hold.onmessage = function (ev) { if (ev.data === 'ended' && view === 'session') { closeHold(); pollState(); } };
+  }
+  function closeHold() { if (hold) { hold.close(); hold = null; } }
+
   function showLobby(text) {
     view = 'lobby';
     clearTimeout(timers.state); clearTimeout(timers.events);
     frame.src = 'about:blank'; loaded = ''; hooked = null;   // 폰 화면과의 연결(WebRTC)을 끊습니다
+    closeHold();
     session.hidden = true; lobby.hidden = false;
     say(text);
+    openFeed();
     pollLobby();
   }
 
@@ -81,7 +105,7 @@
     if (view !== 'lobby') return;
     api('devices').then(function (r) { if (r.ok && view === 'lobby') drawRack(r.body.devices); })
       .catch(function () { $('lobby-count').textContent = '체험 서버에 닿지 못하고 있어요.'; })
-      .finally(function () { timers.lobby = setTimeout(pollLobby, 2000); });
+      .finally(function () { timers.lobby = setTimeout(pollLobby, 5000); });
   }
 
   function claim(d, li) {
@@ -100,6 +124,7 @@
   function showSession(mine) {
     view = 'session';
     clearTimeout(timers.lobby);
+    closeFeed();
     lobby.hidden = true; session.hidden = false;
     $('bar-phone').textContent = '폰 ' + mine.n;
     $('idle-warn').hidden = true;
@@ -108,6 +133,7 @@
     stepsBox.replaceChildren(); summary.hidden = true;
     runLine.textContent = '아직 시작한 안내가 없어요. 위에서 하나를 골라 보세요.';
     window.scrollTo(0, 0);
+    openHold();
     pollState(); pollEvents();
   }
 
@@ -127,7 +153,7 @@
     coverNote.textContent = d.ready ? '' : (d.preparing ? '폰을 처음 상태로 돌리는 중이에요' : (d.note || '폰을 준비하고 있어요'));
 
     var left = (s.lease || {}).idle_left;
-    var warn = typeof left === 'number' && left <= 45 && d.ready;
+    var warn = typeof left === 'number' && left <= 60 && d.ready;
     $('idle-warn').hidden = !warn;
     if (warn) $('idle-text').textContent = '누른 것이 없어서 ' + left + '초 뒤에 폰을 반납해요.';
 
@@ -170,8 +196,9 @@
     clearTimeout(timers.state);
     if (view !== 'session') return;
     var was = active; active = false;
-    api('state?active=' + (was ? 1 : 0)).then(function (r) { if (lost(r)) return; if (r.ok) showState(r.body); })
-      .catch(function () { cover.hidden = false; coverNote.textContent = '체험 서버에 닿지 못하고 있어요'; })
+    api('state?active=' + (was ? 1 : 0)).then(function (r) { misses = 0; if (lost(r)) return; if (r.ok) showState(r.body); })
+      // 한두 번 닿지 못한 것으로 폰 화면을 가리지 않습니다. 폰 화면은 서버와 따로 이어져 있습니다.
+      .catch(function () { if (++misses >= 4) { cover.hidden = false; coverNote.textContent = '체험 서버에 닿지 못하고 있어요'; } })
       .finally(function () { if (view === 'session') timers.state = setTimeout(pollState, 3000); });
   }
 

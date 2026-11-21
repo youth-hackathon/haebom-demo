@@ -3,7 +3,9 @@
 파이썬 표준 라이브러리와 adb만 쓴다. 컨테이너 안에서 돌고, 폰(Cuttlefish 컨테이너의 기기들)에는 네트워크의 adb로 붙는다.
 
     GET  /devices   폰 목록과 상태: 비어 있음 / 사용 중 / 켜지는 중, 그리고 내가 쓰는 폰
-    POST /claim     {"device": "cvd_1-1-1"}  그 폰을 내 것으로. 폰은 처음 상태로 돌아간 뒤 열린다
+    GET  /devices/stream   같은 목록을 바뀔 때마다 밀어 준다 (server-sent events)
+    GET  /hold      폰을 쓰는 페이지가 열어 두는 연결. 이 연결이 살아 있는 동안 그 폰은 잠겨 있다
+    POST /claim     {"device": "cvd_1-1-1"}  그 폰을 내 것으로. 폰은 처음 상태로 돌아가고 해봄 앱이 떠 있는 채로 열린다
     POST /release   폰을 반납한다
     GET  /state     내 폰의 준비 상태, 폰의 실제 값(글자 크기, 켜진 알람), 반납까지 남은 시간
     GET  /events    내 폰에서 진행되는 안내를 순서대로. ?after=<번호> 뒤의 것만
@@ -12,8 +14,16 @@
     POST /reset     내 폰을 처음 상태로
     GET  /allow     (nginx만 부른다) 이 요청이 그 폰의 화면에 닿아도 되는지
 
+폰은 잠금이다. 한 사람이 고르면 그 사람이 놓을 때까지 다른 누구도 고르지 못하고(409), 그 폰의 화면 주소에도 닿지 못한다(403).
 폰을 쓰는 사람은 쿠키(haebom_lease)로 가린다. 한 브라우저가 한 번에 한 대를 쓴다.
-폰은 이럴 때 회수된다: "사용 끝내기"를 눌렀을 때, 페이지가 닫혀 소식이 끊겼을 때(SEEN_S), 한동안 아무 조작이 없을 때(IDLE_S).
+
+잠금이 풀리는 때는 셋뿐이다.
+- "사용 끝내기"를 눌렀을 때.
+- 페이지가 닫혔을 때. 페이지는 /hold 연결을 열어 두고, 서버는 그 연결이 살아 있는 것으로 "아직 있다"를 안다.
+  페이지의 타이머에 기대지 않으므로 창이 가려지거나 최소화되어도 풀리지 않는다. 연결이 끊기고 SEEN_S 가 지나면 푼다.
+- IDLE_S 동안 아무 조작이 없을 때. 페이지에 1분 전부터 알림이 뜨고, 누르면 이어진다.
+"조작"은 세 군데서 본다: 페이지가 알려 주는 누름과 키, 폰이 스스로 적는 마지막 입력 시각(dumpsys power), 앱이 남기는 안내 진행.
+폰을 만지고 있는 사람에게서 폰을 가져가는 일이 없게 하려는 것이다.
 
 이 서버가 계속하는 일:
 - 폰 찾기: Cuttlefish operator가 알려 주는 기기 목록을 읽는다.
@@ -53,9 +63,12 @@ RELAYS = dict(kv.split("=", 1) for kv in os.environ.get("RELAYS", "8770=front:87
 # it is given to the app and to nothing else (not logged, not sent to the page).
 APP_TTS_BASE = os.environ.get("APP_TTS_BASE", "").strip().rstrip("/")
 APP_TTS_STREAM = os.environ.get("APP_TTS_STREAM", "true").strip() or "true"
-IDLE_S = int(os.environ.get("LEASE_IDLE_S", "180"))  # no touch, no key, no button for this long: the phone is taken back
-SEEN_S = int(os.environ.get("LEASE_SEEN_S", "25"))   # the page has not asked anything for this long: it is gone
+# The way the guide server is asked to answer (the request's `mode`): what artemis does with a request no manual covers.
+APP_GUIDE_MODE = os.environ.get("APP_GUIDE_MODE", "jev").strip() or "jev"
+IDLE_S = int(os.environ.get("LEASE_IDLE_S", "600"))  # no touch, no key, no button for this long: the phone is taken back
+SEEN_S = int(os.environ.get("LEASE_SEEN_S", "30"))   # the holder's page has been closed for this long: it is gone
 COOKIE = "haebom_lease"
+LEASE_FILE = os.environ.get("LEASE_FILE", "/data/leases.json")  # who holds which phone, kept across a restart of this server
 PKG = "ai.toolus.mobileguide"
 SERVICE = f"{PKG}/{PKG}.GuideAccessibilityService"
 TAG = "ToolusGuide"
@@ -131,6 +144,7 @@ class Events:
         self.task = ""
         self.started = 0.0
         self.state = "idle"  # idle | running | done | stopped
+        self.moved = 0.0     # when the app last logged a step, an outcome or a start
 
     def clear(self) -> None:
         with self.lock:
@@ -153,6 +167,8 @@ class Events:
 
     def feed(self, msg: str) -> None:
         with self.lock:
+            if msg.startswith(("plan event=", "step=", "outcome ", "ARM ", "TOUCH ")):
+                self.moved = time.time()
             m = re.match(r"plan event=(\S+) ", msg)
             if m and m.group(1) == "start":
                 self.run += 1
@@ -231,6 +247,7 @@ class Phone:
         self.holder = ""
         self.since = self.last_seen = self.last_active = 0.0
         self.preparing = False
+        self.input_mark = ""                      # the phone's last-input time when it was last read
 
     # ---- adb
 
@@ -271,7 +288,7 @@ class Phone:
         """The app looks at this compose's guide server, and at the speech server it was told (or the one in this compose)."""
         guide = "http://127.0.0.1:8770" if "8770" in RELAYS else FRONT
         tts = APP_TTS_BASE or ("http://127.0.0.1:8766" if "8766" in RELAYS else TTS)
-        self.sh(f"am broadcast -a {PKG}.DEBUG_CONFIG -p {PKG} --es guide_base {quote(guide)} --es tts_base {quote(tts)} --es stream {quote(APP_TTS_STREAM)}")
+        self.sh(f"am broadcast -a {PKG}.DEBUG_CONFIG -p {PKG} --es guide_base {quote(guide)} --es mode {quote(APP_GUIDE_MODE)} --es tts_base {quote(tts)} --es stream {quote(APP_TTS_STREAM)}")
 
     def check(self) -> None:
         """Bring the phone to the state the demo needs, whatever state it is in. Called every few seconds."""
@@ -368,6 +385,11 @@ class Phone:
         return {"font_scale": float(scale) if re.fullmatch(r"[0-9.]+", scale) else None,
                 "alarms_on": [f"{int(h):02d}:{int(m):02d}" for h, m in on]}
 
+    def last_input(self) -> str:
+        """The phone's own record of when it was last touched or a key was pressed (uptime ms). It changes with every input."""
+        m = re.search(r"mLastUserActivityTime\(excludingAttention\)=(\d+)", self.adb("shell", "dumpsys power", timeout=10))
+        return m.group(1) if m else ""
+
     def start(self, task: str) -> bool:
         self.events.task = task
         return "Broadcast completed" in self.sh(f"am broadcast -a {PKG}.DEBUG_START -p {PKG} --es task {quote(task)}")
@@ -393,7 +415,8 @@ class Phone:
             self.sh(f"am force-stop {PKG}; su 0 rm -f /data/user/0/{PKG}/shared_prefs/haebom.xml", 10)
             self.service = self.enable_service(toggle=True)
             self.configure()
-            self.sh("input keyevent KEYCODE_WAKEUP; input keyevent KEYCODE_HOME")
+            # the visitor starts in the 해봄 app, with the home screen behind it
+            self.sh(f"input keyevent KEYCODE_WAKEUP; input keyevent KEYCODE_HOME; am start -n {PKG}/.MainActivity", 15)
             self.events.clear()
 
     def tidy(self) -> None:
@@ -408,6 +431,35 @@ class Phone:
 
 PHONES: dict[str, Phone] = {}
 LEASES = threading.Lock()
+BELL = threading.Condition()               # rung when who-has-which changes: the first screens are told at once
+
+
+def load_leases() -> dict:
+    try:
+        with open(LEASE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+SAVED: dict = load_leases()                # phone id -> {"holder", "since"}, as the server last wrote it
+
+
+def save_leases() -> None:
+    """LEASES is held. A lock must outlive this process: the file is read when the server starts again."""
+    now = {p.id: {"holder": p.holder, "since": p.since} for p in PHONES.values() if p.holder}
+    try:
+        os.makedirs(os.path.dirname(LEASE_FILE), exist_ok=True)
+        with open(LEASE_FILE + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(now, f)
+        os.replace(LEASE_FILE + ".tmp", LEASE_FILE)
+    except OSError as exc:
+        print(f"[demo-api] could not write {LEASE_FILE}: {exc}", flush=True)
+
+
+def ring() -> None:
+    with BELL:
+        BELL.notify_all()
 ENDED: dict[str, tuple[str, float]] = {}   # token -> (why the phone was taken back, when), for the page that still holds it
 
 
@@ -424,6 +476,11 @@ def discover() -> None:
                 pid, port = d.get("device_id"), d.get("adb_port")
                 if pid and port and pid not in PHONES:
                     phone = Phone(pid, int(port))
+                    was = SAVED.get(pid)
+                    if was and was.get("holder"):
+                        # held before this server was restarted: still held, by the same browser
+                        phone.holder, phone.since = was["holder"], float(was.get("since") or time.time())
+                        phone.last_seen = phone.last_active = time.time()
                     PHONES[pid] = phone
                     threading.Thread(target=phone.keep, daemon=True).start()
                     threading.Thread(target=phone.read_log, daemon=True).start()
@@ -441,7 +498,9 @@ def take_back(phone: Phone, why: str) -> None:
     """LEASES is held. The phone is free again; the page that had it learns why at its next question."""
     ENDED[phone.holder] = (why, time.time())
     phone.holder, phone.preparing = "", False
+    save_leases()
     threading.Thread(target=phone.tidy, daemon=True).start()
+    ring()
 
 
 def reaper() -> None:
@@ -458,6 +517,28 @@ def reaper() -> None:
                     take_back(p, "idle")
             for t in [t for t, (_, at) in ENDED.items() if now - at > 600]:
                 del ENDED[t]
+
+
+def watch_use() -> None:
+    """A phone someone is touching is in use, whatever the page says. Asked of the phone itself every few seconds."""
+    while True:
+        time.sleep(4)
+        with LEASES:
+            held = [(p, p.holder) for p in PHONES.values() if p.holder and not p.preparing]
+        for p, holder in held:
+            try:
+                mark = p.last_input()
+            except Exception:  # noqa: BLE001
+                continue
+            now = time.time()
+            with LEASES:
+                if p.holder != holder:
+                    continue
+                if mark and p.input_mark and mark != p.input_mark:
+                    p.last_active = now
+                if p.events.moved > p.last_active:
+                    p.last_active = p.events.moved
+                p.input_mark = mark or p.input_mark
 
 
 def devices(token: str) -> dict:
@@ -491,8 +572,10 @@ def claim(pid: str, token: str) -> tuple[int, dict, str]:
             take_back(other, "moved")
         now = time.time()
         new = secrets.token_urlsafe(24)
-        phone.holder, phone.preparing = new, True
+        phone.holder, phone.preparing, phone.input_mark = new, True, ""
         phone.since = phone.last_seen = phone.last_active = now
+        save_leases()
+    ring()
 
     def prepare() -> None:
         try:
@@ -503,6 +586,7 @@ def claim(pid: str, token: str) -> tuple[int, dict, str]:
             if phone.holder == new:
                 phone.preparing = False
                 phone.last_active = time.time()
+        ring()
 
     threading.Thread(target=prepare, daemon=True).start()
     return 200, {"ok": True, "device": phone.id, "n": phone.n}, new
@@ -575,6 +659,64 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _stream(self, token: str) -> None:
+        """The phone list, sent again whenever it changes: a first screen shows who has which phone as it happens."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")  # nginx passes each line on as it comes
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        last, beat = "", time.time()
+        try:
+            while True:
+                now = json.dumps(devices(token), ensure_ascii=False)
+                if now != last:
+                    self.wfile.write(f"data: {now}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    last, beat = now, time.time()
+                elif time.time() - beat > 15:
+                    self.wfile.write(b": still here\n\n")
+                    self.wfile.flush()
+                    beat = time.time()
+                with BELL:
+                    BELL.wait(1.0)  # a change rings the bell; a phone that came up or went down is seen within a second
+        except OSError:
+            pass  # the page went away
+
+    def _hold(self) -> None:
+        """The holder's page keeps this open. While it is open the phone stays locked: the server marks the holder as
+        here every few seconds, and learns that the page is gone when a write fails. No timer of the page is involved."""
+        token = self._token()
+        with LEASES:
+            phone = holder_of(token)
+            if phone is not None:
+                phone.last_seen = time.time()
+        if phone is None:
+            return self._send(410, {"error": "쓰고 있는 폰이 없어요.", "reason": ENDED.get(token, ("none", 0))[0]})
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            while True:
+                with LEASES:
+                    mine = phone.holder == token
+                    if mine:
+                        phone.last_seen = time.time()
+                # "held" keeps the line alive; "ended" tells the page at once that the phone is no longer its own
+                self.wfile.write(b"data: held\n\n" if mine else b"data: ended\n\n")
+                self.wfile.flush()
+                if not mine:
+                    return
+                time.sleep(3)
+        except OSError:
+            pass  # the page was closed: SEEN_S from now, the phone is free
+
     def _token(self) -> str:
         for part in (self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
@@ -602,6 +744,10 @@ class Handler(BaseHTTPRequestHandler):
         params = dict(kv.split("=", 1) for kv in query.split("&") if "=" in kv)
         path = path.rstrip("/")
         try:
+            if path.endswith("/devices/stream"):
+                return self._stream(self._token())
+            if path.endswith("/hold"):
+                return self._hold()
             if path.endswith("/devices"):
                 return self._send(200, devices(self._token()))
             if path.endswith("/allow"):
@@ -659,6 +805,7 @@ def main() -> None:
         threading.Thread(target=relay, args=(int(port), target), daemon=True).start()
     threading.Thread(target=discover, daemon=True).start()
     threading.Thread(target=reaper, daemon=True).start()
+    threading.Thread(target=watch_use, daemon=True).start()
     print(f"[demo-api] :{PORT} operator {OPERATOR} front {FRONT} relays {RELAYS} "
           f"speech {'given by APP_TTS_BASE' if APP_TTS_BASE else TTS} idle {IDLE_S}s", flush=True)
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

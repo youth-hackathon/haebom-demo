@@ -33,6 +33,20 @@ server {
         proxy_pass $api;
         proxy_read_timeout 90s;
     }
+    # 폰 목록이 바뀔 때마다 서버가 밀어 주는 줄입니다. 모아 두지 않고 오는 대로 넘깁니다.
+    location = /haebom/api/devices/stream {
+        rewrite ^ /devices/stream break;
+        proxy_pass $api;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+    # 폰을 쓰는 페이지가 열어 두는 연결입니다. 이 연결이 살아 있는 동안 그 폰은 잠겨 있습니다.
+    location = /haebom/api/hold {
+        rewrite ^ /hold break;
+        proxy_pass $api;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
     # nginx만 부르는 길은 밖에서 부르지 못하게 막습니다.
     location = /haebom/api/allow { return 404; }
 
