@@ -1,5 +1,6 @@
 .env
 *.env
+secrets/
 *password*.txt
 *token*.txt
 .DS_Store
