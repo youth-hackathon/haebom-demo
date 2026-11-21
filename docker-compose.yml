@@ -4,9 +4,9 @@
 #   docker compose up -d --build
 #   → http://127.0.0.1:6080/haebom/  (https는 6443)
 #
-#   web ──▶ device   기기 화면(Cuttlefish의 웹 클라이언트)과 WebRTC 신호
-#    │ └──▶ api      안내 시작, 멈춤, 처음 상태로, 진행 기록
-#    │       └─adb─▶ device   앱 설치, 접근성 서비스, 요청 보내기, 로그 읽기
+#   web ──▶ device   폰 화면(Cuttlefish의 웹 클라이언트)과 WebRTC 신호. 그 폰을 쓰는 브라우저만 지나갑니다
+#    │ └──▶ api      폰 목록, 폰 고르기와 반납, 안내 시작, 진행 기록
+#    │       └─adb─▶ device   앱 설치, 접근성 서비스, 요청 보내기, 로그 읽기, 처음 상태로 돌리기
 #   device 안의 앱 ─(adb reverse)─▶ api ─▶ front ─▶ artemis ─▶ 모델
 #                                      └──▶ tts
 #
@@ -36,7 +36,8 @@ services:
         ready || { echo "kvm, vhost-net, vhost-vsock, tun 중 없는 장치가 있습니다."; exit 1; }
         echo "커널 모듈 준비 완료"
 
-  # Android 가상 기기 한 대(Cuttlefish). 처음 켤 때 Android 이미지를 받습니다(약 2GB).
+  # Android 가상 기기 CF_DEVICES 대(Cuttlefish, 기본 4대). 처음 켤 때 Android 이미지를 받습니다(약 2GB).
+  # 한 대에 CPU CF_CPUS 개와 메모리 CF_MEMORY_MB 를 줍니다. 4대면 CPU 16개, 메모리 16GB 가 넉넉합니다.
   # 켤 때마다 한국 폰처럼 맞춥니다: 한국어, 한국 시간, 버튼 세 개짜리 바, 한글 키보드 (device/entrypoint.sh).
   device:
     # cuttlefish-orchestration:stable 의 2026-11-21 시점 digest (호스트 패키지 1.57.15)
@@ -48,8 +49,9 @@ services:
     entrypoint: ["/bin/bash", "/device/entrypoint.sh"]
     environment:
       CF_BUILD: ${CF_BUILD:-16968706/aosp_cf_x86_64_only_phone-userdebug}
-      CF_CPUS: ${CF_CPUS:-8}
-      CF_MEMORY_MB: ${CF_MEMORY_MB:-8192}
+      CF_DEVICES: ${CF_DEVICES:-4}
+      CF_CPUS: ${CF_CPUS:-4}
+      CF_MEMORY_MB: ${CF_MEMORY_MB:-4096}
       CF_WIDTH: ${CF_WIDTH:-720}
       CF_HEIGHT: ${CF_HEIGHT:-1600}
       CF_DPI: ${CF_DPI:-280}
@@ -62,7 +64,7 @@ services:
       - cf-state:/var/tmp/cvd     # 기기 상태 (설치한 앱, 설정)
     ports:
       # adb와 Cuttlefish의 원래 웹 화면. 이 컴퓨터에서만 닿습니다 (매뉴얼 저작과 확인에 씁니다).
-      - "127.0.0.1:${ADB_PORT:-6520}:6520"
+      - "127.0.0.1:6520-6527:6520-6527"   # 폰 1은 6520, 폰 2는 6521, ...
       - "127.0.0.1:${OPERATOR_PORT:-1443}:1443"
       # WebRTC 영상·소리·입력. 다른 컴퓨터에서 보려면 WEBRTC_BIND=0.0.0.0 으로 엽니다.
       - "${WEBRTC_BIND:-127.0.0.1}:15550-15599:15550-15599/tcp"
@@ -96,7 +98,8 @@ services:
       - artemis-data:/data        # 요청 기록 (서버가 /data/logs 에 씁니다)
     restart: unless-stopped
 
-  # 안내 문장을 소리로 바꾸는 서버 (haebom-tts). 키가 없으면 baseline 엔진으로 읽습니다.
+  # 안내 문장을 소리로 바꾸고 말소리를 받아 적는 서버 (haebom-tts). 앱은 언제나 Gemini 음성을 청하므로
+  # secrets/tts.env 에 GEMINI_API_KEY 가 있어야 소리가 납니다.
   tts:
     build:
       context: https://github.com/youth-hackathon/haebom-tts.git#main
@@ -123,20 +126,26 @@ services:
     depends_on: [artemis]
     restart: unless-stopped
 
-  # 시연 API. 기기를 준비하고(앱 설치, 접근성 서비스), 페이지의 버튼을 기기 명령으로 바꾸고, 진행 기록을 읽습니다.
+  # 시연 API. 폰을 방문자에게 한 대씩 내주고 회수하며, 폰을 준비하고(앱 설치, 접근성 서비스), 페이지의 버튼을
+  # 폰의 명령으로 바꾸고, 진행 기록을 읽습니다.
   api:
     build:
       context: .
       dockerfile: api/Dockerfile
     image: haebom-demo-api
     environment:
-      DEVICE_SERIAL: device:6520
-      DEVICE_ID: ${DEVICE_ID:-cvd_1-1-1}
+      DEVICE_HOST: device
+      DEVICES: ${CF_DEVICES:-4}
       FRONT_URL: http://front:8770
       TTS_URL: http://tts:8766
       RELAYS: 8770=front:8770,8766=tts:8766
-      # 앱이 TTS 서버에 청하는 엔진. 비우면 TTS 서버의 기본 엔진(TTS_ENGINE)으로 읽습니다.
-      APP_TTS_ENGINE: ${APP_TTS_ENGINE:-}
+      # 앱이 볼 음성 서버. 비우면 이 compose 의 tts 를 봅니다. 다른 곳에 띄운 서버를 쓰려면 그 주소를 넣습니다
+      # (주소 끝에 비밀 문자열이 있을 수 있으므로 .env 에만 적습니다).
+      APP_TTS_BASE: ${APP_TTS_BASE:-}
+      APP_TTS_STREAM: ${APP_TTS_STREAM:-true}
+      # 폰을 회수하는 때: 아무것도 누르지 않은 시간(초), 페이지에서 소식이 끊긴 시간(초)
+      LEASE_IDLE_S: ${LEASE_IDLE_S:-180}
+      LEASE_SEEN_S: ${LEASE_SEEN_S:-25}
     depends_on: [front, tts]
     restart: unless-stopped
 

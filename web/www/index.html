@@ -3,82 +3,110 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>해봄 · 다음에 누를 곳을 짚어 드려요</title>
+<title>해봄 체험</title>
 <link rel="stylesheet" href="demo.css">
 </head>
 <body>
 <div class="wrap">
 
   <header class="top">
-    <div class="brand">
+    <a class="brand" href="./" aria-label="해봄 처음 화면">
       <span class="mark" aria-hidden="true"></span>
-      <h1>해봄</h1>
-    </div>
-    <p class="lead">스마트폰이 낯선 분 옆에서 <strong>다음에 누를 곳을 짚어 드립니다.</strong> 대신 눌러 드리지 않습니다. 직접 해 봐야 다음에도 할 수 있으니까요.</p>
+      <span class="name">해봄</span>
+    </a>
+    <p class="lead">스마트폰이 낯선 분 옆에서 다음에 누를 곳을 짚어 드립니다. 대신 눌러 드리지는 않아요.</p>
   </header>
 
-  <main class="stage">
+  <!-- 첫 화면: 폰 고르기 -->
+  <main id="lobby" class="lobby" hidden>
+    <h1>폰을 하나 골라 직접 해 보세요</h1>
+    <p id="lobby-count" class="lobby-count">폰을 살펴보고 있어요.</p>
+    <p id="lobby-notice" class="notice" role="status" hidden></p>
 
-    <section class="phone-col" aria-label="폰 화면">
-      <div class="phone">
-        <div class="screen">
-          <iframe id="device" title="Android 기기 화면" allow="microphone; autoplay; clipboard-read; clipboard-write; fullscreen"></iframe>
-          <div id="device-cover" class="cover">
-            <div class="spinner" aria-hidden="true"></div>
-            <p id="device-note">기기를 준비하고 있어요</p>
+    <ol id="rack" class="rack" aria-label="체험용 폰"></ol>
+
+    <ul class="terms">
+      <li>폰을 고르면 다 쓸 때까지 다른 사람이 들어오지 못해요.</li>
+      <li>고른 폰은 처음 상태로 돌아간 뒤에 열려요. 앞사람이 한 것은 남지 않아요.</li>
+      <li>다 쓰면 <b>사용 끝내기</b>를 눌러 주세요. 3분 동안 아무것도 누르지 않아도 폰이 반납돼요.</li>
+    </ul>
+  </main>
+
+  <!-- 폰 한 대를 쓰는 화면 -->
+  <main id="session" class="session" hidden>
+
+    <div class="bar">
+      <p class="bar-title"><b id="bar-phone">폰</b> 사용 중이에요</p>
+      <button id="btn-leave" type="button" class="leave">사용 끝내기</button>
+    </div>
+    <div id="idle-warn" class="warn" role="alert" hidden>
+      <span id="idle-text"></span>
+      <button id="btn-stay" type="button">계속 쓰기</button>
+    </div>
+
+    <div class="stage">
+
+      <section class="phone-col" aria-label="폰 화면">
+        <div class="phone">
+          <div class="screen">
+            <iframe id="device" title="Android 폰 화면" allow="microphone; autoplay; clipboard-read; clipboard-write; fullscreen"></iframe>
+            <div id="device-cover" class="cover">
+              <div class="spinner" aria-hidden="true"></div>
+              <p id="device-note">폰을 준비하고 있어요</p>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="phone-tools">
-        <button id="btn-sound" type="button" class="tool" aria-pressed="false">소리 켜기</button>
-        <button id="btn-mic" type="button" class="tool" aria-pressed="false">마이크 켜기</button>
-        <button id="btn-reset" type="button" class="tool">처음 상태로</button>
-      </div>
-      <p class="phone-hint">화면은 실제 Android입니다. <strong>마우스로 직접 누르고 끌 수 있어요.</strong> 안내가 뜨면 표시된 곳을 눌러 보세요.</p>
-      <p id="mic-hint" class="phone-hint warn" hidden>마이크는 https 주소나 이 컴퓨터(localhost)에서 열었을 때만 켤 수 있어요.</p>
-    </section>
-
-    <section class="panel">
-
-      <div class="card">
-        <h2>무엇을 해 볼까요?</h2>
-        <div id="tasks" class="tasks"></div>
-        <form id="free" class="free" autocomplete="off">
-          <label for="free-text">직접 적어 보기</label>
-          <div class="free-row">
-            <input id="free-text" type="text" maxlength="60" placeholder="예: 설정에서 블루투스 화면 열어줘">
-            <button type="submit" class="primary">안내 시작</button>
-          </div>
-          <p class="note">위 목록에 있는 일은 미리 만들어 검증한 <b class="chip manual">매뉴얼</b>이 바로 안내합니다. 목록에 없는 일은 <b class="chip model">AI</b>가 화면을 보고 한 단계씩 안내합니다(단계마다 5~15초).</p>
-        </form>
-      </div>
-
-      <div class="card">
-        <div class="card-head">
-          <h2>안내 진행</h2>
-          <button id="btn-stop" type="button" class="quiet" hidden>안내 멈추기</button>
+        <div class="phone-tools">
+          <button id="btn-sound" type="button" class="tool" aria-pressed="false">소리 켜기</button>
+          <button id="btn-mic" type="button" class="tool" aria-pressed="false">마이크 켜기</button>
+          <button id="btn-reset" type="button" class="tool">처음 상태로</button>
         </div>
-        <p id="run-line" class="run-line">아직 시작한 안내가 없어요. 위에서 하나를 골라 보세요.</p>
-        <ol id="steps" class="steps"></ol>
-        <div id="summary" class="summary" hidden></div>
-      </div>
+        <p class="phone-hint">화면은 실제 Android입니다. 마우스로 직접 누르고 끌 수 있어요.</p>
+        <p id="mic-hint" class="phone-hint caution" hidden>마이크는 https 주소나 이 컴퓨터(localhost)에서 열었을 때만 켤 수 있어요.</p>
+      </section>
 
-      <div class="card slim">
-        <h2>지금 폰의 실제 값</h2>
-        <dl class="facts">
-          <div><dt>글자 크기</dt><dd id="fact-font">–</dd></div>
-          <div><dt>켜진 알람</dt><dd id="fact-alarm">–</dd></div>
-        </dl>
-        <p class="note">안내가 "다 했어요"라고 말하는 근거입니다. 화면을 보고 짐작하지 않고 폰의 설정값을 직접 읽습니다.</p>
-      </div>
+      <section class="panel">
 
-      <ul id="health" class="health" aria-label="준비 상태"></ul>
-    </section>
+        <div class="card">
+          <h2>무엇을 해 볼까요?</h2>
+          <div id="tasks" class="tasks"></div>
+          <form id="free" class="free" autocomplete="off">
+            <label for="free-text">직접 적어 보기</label>
+            <div class="free-row">
+              <input id="free-text" type="text" maxlength="60" placeholder="예: 와이파이 설정 화면 열어줘">
+              <button type="submit" class="primary">안내 시작</button>
+            </div>
+            <p class="note">위 목록의 일은 미리 만들어 검증한 <b class="chip manual">매뉴얼</b>이 바로 안내합니다. 목록에 없는 일은 <b class="chip model">AI</b>가 화면을 보고 한 단계씩 안내해요. 한 단계에 5~15초 걸립니다.</p>
+          </form>
+        </div>
 
+        <div class="card">
+          <div class="card-head">
+            <h2>안내 진행</h2>
+            <button id="btn-stop" type="button" class="quiet" hidden>안내 멈추기</button>
+          </div>
+          <p id="run-line" class="run-line">아직 시작한 안내가 없어요. 위에서 하나를 골라 보세요.</p>
+          <ol id="steps" class="steps"></ol>
+          <div id="summary" class="summary" hidden></div>
+        </div>
+
+        <div class="card">
+          <h2>지금 폰의 실제 값</h2>
+          <dl class="facts">
+            <div><dt>글자 크기</dt><dd id="fact-font">–</dd></div>
+            <div><dt>켜진 알람</dt><dd id="fact-alarm">–</dd></div>
+          </dl>
+          <p class="note">안내가 "다 했어요"라고 말하는 근거입니다. 화면을 보고 짐작하지 않고 폰의 설정값을 직접 읽습니다.</p>
+        </div>
+
+        <ul id="health" class="health" aria-label="준비 상태"></ul>
+      </section>
+
+    </div>
   </main>
 
   <footer class="foot">
-    <p>2026 서울AI디지털배움터 청년AI해커톤 · 팀 Toolus · 화면은 서버에서 도는 Android 가상 기기(Cuttlefish)를 WebRTC로 보여 드리는 것입니다.</p>
+    <p>2026 서울AI디지털배움터 청년AI해커톤, 팀 Toolus. 폰은 서버에서 도는 Android 가상 기기이고 화면은 WebRTC로 보여 드립니다.</p>
   </footer>
 </div>
 <script src="demo.js"></script>

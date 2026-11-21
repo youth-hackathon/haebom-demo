@@ -1,7 +1,10 @@
 # 밖으로 여는 것은 이 서버뿐입니다 (WebRTC 영상·소리·입력이 오가는 포트는 기기 컨테이너가 따로 엽니다).
-#   /haebom/           시연 페이지
-#   /haebom/api/...    시연 API 컨테이너: 안내 시작, 멈춤, 처음 상태로, 진행 기록
-#   그 밖              기기 컨테이너의 Cuttlefish operator: 기기 화면(client.html)과 WebRTC 신호
+#   /haebom/              시연 페이지
+#   /haebom/api/...       시연 API 컨테이너: 폰 목록, 폰 고르기와 반납, 안내 시작, 진행 기록
+#   /devices/<폰>/...      기기 컨테이너의 Cuttlefish operator: 그 폰의 화면(client.html)과 WebRTC 신호.
+#                         그 폰을 쓰고 있는 브라우저만 지나갑니다(시연 API에 물어봅니다).
+#   /infra_config         WebRTC 설정 (폰 화면이 읽습니다)
+#   그 밖                 없음. operator의 다른 화면(기기 목록 등)은 내보내지 않습니다.
 # DEMO_PASSWORD가 있으면 모든 경로에 비밀번호가 걸립니다 (10-auth.sh).
 # 80은 http, 443은 https(자체 서명)입니다. 브라우저는 https나 localhost에서만 마이크를 허용합니다.
 map $http_upgrade $connection_upgrade { default upgrade; '' close; }
@@ -30,7 +33,20 @@ server {
         proxy_pass $api;
         proxy_read_timeout 90s;
     }
-    location / {
+    # nginx만 부르는 길은 밖에서 부르지 못하게 막습니다.
+    location = /haebom/api/allow { return 404; }
+
+    # 이 요청을 보낸 브라우저가 그 폰을 쓰고 있는지 시연 API에 묻습니다. 쿠키가 같이 갑니다.
+    location = /_lease {
+        internal;
+        proxy_pass $api/allow;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-URI $request_uri;
+    }
+
+    location /devices/ {
+        auth_request /_lease;
         # client.html에 tune.js를 끼워 넣습니다 (압축된 응답에는 못 넣으므로 압축을 끕니다).
         proxy_set_header Accept-Encoding "";
         sub_filter '<head>' '<head><script src="/haebom/tune.js"></script>';
@@ -45,4 +61,10 @@ server {
         proxy_send_timeout 3600s;
         proxy_buffering off;
     }
+    location = /infra_config {
+        proxy_pass $device;
+        proxy_ssl_verify off;
+        proxy_set_header Host $host;
+    }
+    location / { return 404; }
 }
