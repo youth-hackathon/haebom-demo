@@ -104,8 +104,13 @@ services:
       GUIDE_CLI_TIMEOUT: "55"
       GUIDE_SUMMARY_WORKERS: "2"
       GUIDE_LOG_SHOTS: "off"
+      # 이 폰에 있는 앱과 안 되는 일. LLM의 지시문에 들어가서, 없는 앱이 필요한 요청은 첫 단계에서 "여기서는 안 돼요"로 답합니다.
+      GUIDE_ENVIRONMENT_FILE: /env/environment.md
+      # jev 방식에서 LLM이 답하는 때: 첫 단계, 이미 지나온 화면이 다시 나올 때, Jev가 이만큼 이어서 답한 뒤, Jev가 "다 됐다"고 할 때
+      GUIDE_JEV_CHECK_EVERY: ${GUIDE_JEV_CHECK_EVERY:-3}
     volumes:
       - artemis-data:/data        # 요청 기록 (서버가 /data/logs 에 씁니다)
+      - ./artemis/environment.md:/env/environment.md:ro
     restart: unless-stopped
 
   # 안내 문장을 소리로 바꾸고 말소리를 받아 적는 서버 (haebom-tts). 앱은 언제나 Gemini 음성을 청하므로

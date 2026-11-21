@@ -12,7 +12,7 @@
   var tasksBox = $('tasks'), stepsBox = $('steps'), runLine = $('run-line'), summary = $('summary');
   var btnStop = $('btn-stop'), btnReset = $('btn-reset'), btnSound = $('btn-sound'), btnMic = $('btn-mic');
 
-  var SOURCE = { manual: '매뉴얼', check: '폰 설정값', model: 'AI', wait: '기다림' };
+  var SOURCE = { manual: '매뉴얼', check: '폰 설정값', model: 'AI', wait: '기다림', rule: '첫 단계' };
   // 시니어가 실제로 할 만한 일을 앞에 둡니다. 나머지 매뉴얼은 그 뒤에 나옵니다.
   var FIRST = ['font-size', 'alarm-8'];
   var HINT = { 'font-size': '설정에서 글자를 한 단계 키웁니다', 'alarm-8': '시계 앱에서 오전 8시 알람을 맞춥니다', 'bluetooth': '설정의 블루투스 화면까지 갑니다' };
