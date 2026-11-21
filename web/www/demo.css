@@ -56,9 +56,9 @@ button.quiet { background: transparent; color: var(--t2); min-height: 38px; padd
 .notice { margin: 0 0 18px; padding: 12px 16px; border-radius: 14px; background: var(--warn-soft); border: 1px solid var(--warn-edge); color: var(--warn); font-weight: 600; }
 
 /* 폰 네 대: 이 페이지에서 가장 큰 것 */
-/* 폰이 몇 대든 가운데로 모읍니다. 한 칸의 폭은 넉 대가 한 줄에 들어가던 때와 같습니다. */
+/* 폰이 몇 대든 한 줄을 양 끝까지 고르게 나눠 씁니다(3대면 왼쪽, 가운데, 오른쪽). */
 .rack { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 18px; }
-.rack .slot { flex: 0 0 calc((100% - 54px) / 4); min-width: 0; }
+.rack .slot { flex: 1 1 calc((100% - 54px) / 4); min-width: 0; }
 .slot button { width: 100%; height: 100%; display: grid; justify-items: center; align-content: start; gap: 2px;
   padding: 22px 14px 16px; border-radius: 26px; border: 2px solid transparent; background: var(--paper); text-align: center; }
 .handset { position: relative; width: min(148px, 70%); aspect-ratio: 9 / 19.5; border-radius: 26px; background: var(--ink); padding: 8px; margin-bottom: 16px; }
@@ -215,7 +215,7 @@ button.quiet { background: transparent; color: var(--t2); min-height: 38px; padd
   .flow li:nth-child(2)::after { display: none; }
 }
 @media (max-width: 860px) {
-  .rack .slot { flex-basis: calc((100% - 18px) / 2); }
+  .rack .slot { flex: 0 0 calc((100% - 18px) / 2); }
   .stage { grid-template-columns: 1fr; }
   .phone-col { position: static; max-width: 380px; margin: 0 auto; width: 100%; }
   .phone-col { --pw: min(100%, calc(70vh * 0.45 + 24px)); }
