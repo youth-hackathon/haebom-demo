@@ -290,7 +290,8 @@ class Phone:
         for stream in (10, 3):
             m = re.search(r"range \[\d+\.\.(\d+)\]", self.sh(f"cmd media_session volume --stream {stream} --get", 8))
             if m:
-                self.sh(f"cmd media_session volume --stream {stream} --set {m.group(1)}", 8)
+                # `cmd media_session volume --set` says it will and does not, on this Android: `cmd audio` does
+                self.sh(f"cmd audio set-volume {stream} {m.group(1)}", 8)
 
     def configure(self) -> None:
         """The app looks at this compose's guide server, and at the speech server it was told (or the one in this compose)."""
