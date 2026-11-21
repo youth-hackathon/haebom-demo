@@ -1,0 +1,16 @@
+[Unit]
+Description=haebom emulator %i: window manager
+PartOf=haebom-emu@%i.target
+After=haebom-xvfb@%i.service
+Requires=haebom-xvfb@%i.service
+
+[Service]
+User=haebom
+SupplementaryGroups=kvm
+Environment=HOME=/home/haebom
+ExecStart=/home/haebom/haebom/bin/haebom-part.sh wm %i
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=haebom-emu@%i.target

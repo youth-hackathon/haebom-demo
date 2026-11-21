@@ -1,0 +1,15 @@
+[Unit]
+Description=haebom emulator %i: virtual display
+PartOf=haebom-emu@%i.target
+
+
+[Service]
+User=haebom
+SupplementaryGroups=kvm
+Environment=HOME=/home/haebom
+ExecStart=/home/haebom/haebom/bin/haebom-part.sh xvfb %i
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=haebom-emu@%i.target

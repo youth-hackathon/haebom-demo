@@ -1,0 +1,17 @@
+[Unit]
+Description=haebom emulator %i: android emulator
+PartOf=haebom-emu@%i.target
+After=haebom-xvfb@%i.service haebom-wm@%i.service
+Requires=haebom-xvfb@%i.service
+
+[Service]
+User=haebom
+SupplementaryGroups=kvm
+Environment=HOME=/home/haebom
+ExecStart=/home/haebom/haebom/bin/haebom-part.sh emulator %i
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=haebom-emu@%i.target

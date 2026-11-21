@@ -1,0 +1,6 @@
+.env
+*.env
+*password*.txt
+*token*.txt
+.DS_Store
+node_modules/

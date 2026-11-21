@@ -1,0 +1,17 @@
+[Unit]
+Description=haebom emulator %i: settings after boot
+PartOf=haebom-emu@%i.target
+After=haebom-emulator@%i.service
+Requires=haebom-emulator@%i.service
+
+[Service]
+User=haebom
+SupplementaryGroups=kvm
+Environment=HOME=/home/haebom
+ExecStart=/home/haebom/haebom/bin/haebom-part.sh postboot %i
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=1500
+
+[Install]
+WantedBy=haebom-emu@%i.target

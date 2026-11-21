@@ -1,0 +1,6 @@
+[Unit]
+Description=haebom emulator %i (display, emulator, vnc, web)
+Wants=haebom-xvfb@%i.service haebom-wm@%i.service haebom-emulator@%i.service haebom-postboot@%i.service haebom-vnc@%i.service haebom-web@%i.service
+
+[Install]
+WantedBy=multi-user.target

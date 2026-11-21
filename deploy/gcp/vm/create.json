@@ -1,0 +1,1 @@
+{"env_config":{"common":{"host_package":"/home/haebom/cf"},"instances":[{"vm":{"cpus":4,"memory_mb":4096},"disk":{"default_build":"/home/haebom/cf"},"graphics":{"gpu_mode":"guest_swiftshader","displays":[{"width":720,"height":1600,"dpi":280}]}}]}}

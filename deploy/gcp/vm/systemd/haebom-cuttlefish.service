@@ -1,0 +1,19 @@
+[Unit]
+Description=haebom: clean up old devices at boot and create the warm ones
+After=haebom-orchestrator.service
+Requires=haebom-orchestrator.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=haebom
+SupplementaryGroups=kvm cvdnetwork render
+Environment=HOME=/home/haebom
+ExecStart=/home/haebom/haebom/bin/haebom-cf.sh boot
+ExecStop=/home/haebom/haebom/bin/haebom-cf.sh stop
+TimeoutStartSec=1200
+TimeoutStopSec=120
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

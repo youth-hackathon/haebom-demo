@@ -1,0 +1,16 @@
+[Unit]
+Description=haebom: Cuttlefish Host Orchestrator (creates/deletes devices on request, localhost only)
+After=network-online.target cuttlefish-host-resources.service cuttlefish-operator.service
+Requires=cuttlefish-host-resources.service
+
+[Service]
+User=haebom
+SupplementaryGroups=kvm cvdnetwork render
+Environment=HOME=/home/haebom
+ExecStart=/usr/lib/cuttlefish-common/bin/host_orchestrator -http_port 2080 -listen_addr 127.0.0.1 -operator_http_port 1080 -cvd_artifacts_dir /home/haebom/ho/artifacts
+Restart=always
+RestartSec=3
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

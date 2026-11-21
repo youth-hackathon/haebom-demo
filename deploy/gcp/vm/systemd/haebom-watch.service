@@ -1,0 +1,14 @@
+[Unit]
+Description=haebom: apply locale/timezone/no-lock to new devices and enforce the device cap
+After=haebom-orchestrator.service
+Requires=haebom-orchestrator.service
+
+[Service]
+User=haebom
+Environment=HOME=/home/haebom
+ExecStart=/home/haebom/haebom/bin/haebom-cf.sh watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
