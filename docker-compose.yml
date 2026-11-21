@@ -1,0 +1,158 @@
+# 해봄 시연 환경 전체. 어디서나 같은 명령으로 띄웁니다:
+#
+#   cp .env.example .env        # 키와 비밀번호를 적습니다 (저장소에 올라가지 않습니다)
+#   docker compose up -d --build
+#   → http://127.0.0.1:6080/haebom/  (https는 6443)
+#
+#   web ──▶ device   기기 화면(Cuttlefish의 웹 클라이언트)과 WebRTC 신호
+#    │ └──▶ api      안내 시작, 멈춤, 처음 상태로, 진행 기록
+#    │       └─adb─▶ device   앱 설치, 접근성 서비스, 요청 보내기, 로그 읽기
+#   device 안의 앱 ─(adb reverse)─▶ api ─▶ front ─▶ artemis ─▶ 모델
+#                                      └──▶ tts
+#
+# 밖으로 여는 포트는 web(6080, 6443)과 기기의 WebRTC 포트(15550-15599)뿐입니다. adb(6520)는 이 컴퓨터에서만 닿습니다.
+# 호스트에는 KVM이 있어야 합니다(리눅스, 또는 Docker Desktop의 WSL2). Cuttlefish가 가상 머신이기 때문입니다.
+name: haebom-demo
+
+services:
+  # 호스트 커널에 KVM과 vhost 모듈을 올립니다. 이미 있으면 아무것도 하지 않고 끝납니다.
+  kvm-modules:
+    image: alpine:3.22
+    privileged: true
+    network_mode: none
+    restart: "no"
+    volumes:
+      - /lib/modules:/lib/modules:ro
+    command:
+      - sh
+      - -c
+      - |
+        has() { [ -e "/dev/$$1" ] || [ -e "/sys/class/misc/$$2" ]; }
+        ready() { has kvm kvm && has vhost-net vhost-net && has vhost-vsock vhost-vsock && has net/tun tun; }
+        if ! ready; then
+          modprobe kvm_intel 2>/dev/null || modprobe kvm_amd 2>/dev/null
+          for m in vhost_vsock vhost_net tun bridge; do modprobe "$$m"; done
+        fi
+        ready || { echo "kvm, vhost-net, vhost-vsock, tun 중 없는 장치가 있습니다."; exit 1; }
+        echo "커널 모듈 준비 완료"
+
+  # Android 가상 기기 한 대(Cuttlefish). 처음 켤 때 Android 이미지를 받습니다(약 2GB).
+  # 켤 때마다 한국 폰처럼 맞춥니다: 한국어, 한국 시간, 버튼 세 개짜리 바, 한글 키보드 (device/entrypoint.sh).
+  device:
+    # cuttlefish-orchestration:stable 의 2026-11-21 시점 digest (호스트 패키지 1.57.15)
+    image: us-docker.pkg.dev/android-cuttlefish-artifacts/cuttlefish-orchestration/cuttlefish-orchestration@sha256:20917e0072c482ddbd5992d874fee7159e5f98730679ac15c5f92dd8f34a7f7f
+    depends_on:
+      kvm-modules:
+        condition: service_completed_successfully
+    privileged: true
+    entrypoint: ["/bin/bash", "/device/entrypoint.sh"]
+    environment:
+      CF_BUILD: ${CF_BUILD:-16968706/aosp_cf_x86_64_only_phone-userdebug}
+      CF_CPUS: ${CF_CPUS:-8}
+      CF_MEMORY_MB: ${CF_MEMORY_MB:-8192}
+      CF_WIDTH: ${CF_WIDTH:-720}
+      CF_HEIGHT: ${CF_HEIGHT:-1600}
+      CF_DPI: ${CF_DPI:-280}
+      CF_GPU_MODE: ${CF_GPU_MODE:-guest_swiftshader}
+      CF_LOCALE: ${CF_LOCALE:-ko-KR}
+      CF_TIMEZONE: ${CF_TIMEZONE:-Asia/Seoul}
+    volumes:
+      - ./device/entrypoint.sh:/device/entrypoint.sh:ro
+      - cf-build:/cf/build        # 받은 Android 이미지
+      - cf-state:/var/tmp/cvd     # 기기 상태 (설치한 앱, 설정)
+    ports:
+      # adb와 Cuttlefish의 원래 웹 화면. 이 컴퓨터에서만 닿습니다 (매뉴얼 저작과 확인에 씁니다).
+      - "127.0.0.1:${ADB_PORT:-6520}:6520"
+      - "127.0.0.1:${OPERATOR_PORT:-1443}:1443"
+      # WebRTC 영상·소리·입력. 다른 컴퓨터에서 보려면 WEBRTC_BIND=0.0.0.0 으로 엽니다.
+      - "${WEBRTC_BIND:-127.0.0.1}:15550-15599:15550-15599/tcp"
+      - "${WEBRTC_BIND:-127.0.0.1}:15550-15599:15550-15599/udp"
+    stop_grace_period: 90s
+    healthcheck:
+      test: ["CMD", "test", "-f", "/run/device-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30m
+    restart: unless-stopped
+
+  # 화면 상태를 받아 다음 동작 하나를 고르는 서버 (haebom-artemis, baseline). 모델 키가 있어야 합니다.
+  artemis:
+    build:
+      context: https://github.com/youth-hackathon/haebom-artemis.git#main
+      dockerfile: relay/Dockerfile
+    image: ${ARTEMIS_IMAGE:-haebom-demo-artemis}
+    env_file:
+      - path: ${ARTEMIS_ENV:-./secrets/artemis.env}
+        required: false
+    dns: [8.8.8.8, 1.1.1.1]
+    environment:
+      GUIDE_PROFILE: ${GUIDE_PROFILE:-artemis}
+      GUIDE_MODE: baseline
+      GUIDE_CLI_TIMEOUT: "55"
+      GUIDE_LOG_SHOTS: "off"
+    restart: unless-stopped
+
+  # 안내 문장을 소리로 바꾸는 서버 (haebom-tts). 키가 없으면 baseline 엔진으로 읽습니다.
+  tts:
+    build:
+      context: https://github.com/youth-hackathon/haebom-tts.git#main
+    image: ${TTS_IMAGE:-haebom-demo-tts}
+    env_file:
+      - path: ${TTS_ENV:-./secrets/tts.env}
+        required: false
+    restart: unless-stopped
+
+  # 매뉴얼로 먼저 답하고, 아니면 artemis로 넘기는 서버 (haebom-manual). 검증된 매뉴얼이 이미지에 들어갑니다.
+  front:
+    build:
+      context: https://github.com/youth-hackathon/haebom-manual.git#main
+      dockerfile_inline: |
+        FROM python:3.12-slim
+        WORKDIR /app
+        COPY manual/ manual/
+        COPY manuals/ /manuals/
+        ENV PYTHONUNBUFFERED=1 PYTHONUTF8=1 FRONT_HOST=0.0.0.0 MANUALS_DIR=/manuals
+        CMD ["python", "manual/front.py"]
+    image: haebom-demo-front
+    environment:
+      ARTEMIS_URL: http://artemis:8765
+    depends_on: [artemis]
+    restart: unless-stopped
+
+  # 시연 API. 기기를 준비하고(앱 설치, 접근성 서비스), 페이지의 버튼을 기기 명령으로 바꾸고, 진행 기록을 읽습니다.
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: haebom-demo-api
+    environment:
+      DEVICE_SERIAL: device:6520
+      DEVICE_ID: ${DEVICE_ID:-cvd_1-1-1}
+      FRONT_URL: http://front:8770
+      TTS_URL: http://tts:8766
+      RELAYS: 8770=front:8770,8766=tts:8766
+      # 앱이 TTS 서버에 청하는 엔진. 비우면 TTS 서버의 기본 엔진(TTS_ENGINE)으로 읽습니다.
+      APP_TTS_ENGINE: ${APP_TTS_ENGINE:-}
+    depends_on: [front, tts]
+    restart: unless-stopped
+
+  # 시연 페이지와 프록시. 밖으로 여는 것은 이것입니다.
+  web:
+    build: ./web
+    image: haebom-demo-web
+    environment:
+      # 비밀번호. 비우면 걸지 않습니다. 밖으로 열 때는 반드시 넣습니다.
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+      DEMO_USER: ${DEMO_USER:-haebom}
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-6080}:80"
+      - "${WEB_BIND:-127.0.0.1}:${WEB_TLS_PORT:-6443}:443"
+    depends_on: [api]
+    restart: unless-stopped
+
+volumes:
+  cf-build:
+    name: ${CF_BUILD_VOLUME:-haebom-demo_cf-build}
+  cf-state:
+    name: ${CF_STATE_VOLUME:-haebom-demo_cf-state}
