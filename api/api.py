@@ -284,8 +284,17 @@ class Phone:
             time.sleep(0.5)
         return False
 
+    def loud(self) -> None:
+        """The phone's volume all the way up. A new device has it at a third, and what reaches the browser is then too
+        quiet to hear on a laptop: the guide's voice goes out on the accessibility stream (10), other sound on media (3)."""
+        for stream in (10, 3):
+            m = re.search(r"range \[\d+\.\.(\d+)\]", self.sh(f"cmd media_session volume --stream {stream} --get", 8))
+            if m:
+                self.sh(f"cmd media_session volume --stream {stream} --set {m.group(1)}", 8)
+
     def configure(self) -> None:
         """The app looks at this compose's guide server, and at the speech server it was told (or the one in this compose)."""
+        self.loud()
         guide = "http://127.0.0.1:8770" if "8770" in RELAYS else FRONT
         tts = APP_TTS_BASE or ("http://127.0.0.1:8766" if "8766" in RELAYS else TTS)
         self.sh(f"am broadcast -a {PKG}.DEBUG_CONFIG -p {PKG} --es guide_base {quote(guide)} --es mode {quote(APP_GUIDE_MODE)} --es tts_base {quote(tts)} --es stream {quote(APP_TTS_STREAM)}")

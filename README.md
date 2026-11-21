@@ -69,7 +69,7 @@ api ──adb──▶ device                    앱 설치, 접근성 서비스
 | `api` | 시연 API. 폰을 한 대씩 내주고 회수하고, 폰을 준비하고, 페이지의 버튼을 폰의 명령으로 바꾸고, 앱의 로그를 진행 기록으로 바꿉니다 | `api/` |
 | `web` | 체험 페이지와 프록시(nginx). 비밀번호, https, 폰 화면에 닿아도 되는지 확인 | `web/` |
 
-폰에 설치되는 앱은 `app/haebom-debug.apk`입니다([haebom-app](https://github.com/youth-hackathon/haebom-app) `783b024`을 빌드한 것이고, 서버 주소는 넣지 않고 빌드했습니다). `api`가 폰에 앱이 없거나 다른 빌드면 설치하고, 폰이 다시 켜져도 접근성 서비스와 서버 주소를 다시 맞춥니다.
+폰에 설치되는 앱은 `app/haebom-debug.apk`입니다([haebom-app](https://github.com/youth-hackathon/haebom-app) `dda761a`을 빌드한 것이고, 서버 주소는 넣지 않고 빌드했습니다). `api`가 폰에 앱이 없거나 다른 빌드면 설치하고, 폰이 다시 켜져도 접근성 서비스와 서버 주소를 다시 맞춥니다.
 
 폰 안의 앱은 `127.0.0.1:8770`(안내)과 `127.0.0.1:8766`(음성)을 봅니다. 이 주소는 `adb reverse`로 `api` 컨테이너에 닿고, `api`가 `front`와 `tts` 컨테이너로 이어 줍니다. 그래서 앱 설정이 어디서나 같습니다.
 
