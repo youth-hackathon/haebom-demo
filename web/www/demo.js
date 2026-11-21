@@ -37,6 +37,17 @@
   function seconds(ms) { return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + '초'; }
   function say(text) { notice.textContent = text || ''; notice.hidden = !text; }
 
+  // 맨 위의 실시간 표시: 서버에서 상태가 올 때마다 한 번 뜁니다. 닿지 못하면 빨간 점이 됩니다.
+  var live = $('live'), liveText = $('live-text');
+  function clock() { var d = new Date(); return [d.getHours(), d.getMinutes(), d.getSeconds()].map(function (n) { return (n < 10 ? '0' : '') + n; }).join(':'); }
+  function heard(what) {
+    live.className = 'live on';
+    void live.offsetWidth;                       // restart the beat
+    live.className = 'live on pulse';
+    liveText.replaceChildren(document.createTextNode(what + ' '), el('b', '', clock()));
+  }
+  function deaf() { live.className = 'live off'; liveText.textContent = '서버에 닿지 못하고 있어요. 다시 잇는 중'; }
+
   // ================================================================ 첫 화면: 폰 고르기
 
   // 폰 목록은 서버가 바뀔 때마다 밀어 줍니다(누가 폰을 고르거나 반납하면 바로). 그 길이 끊겨도 5초마다 다시 읽습니다.
@@ -46,8 +57,9 @@
     feed = new EventSource(API + 'devices/stream');
     feed.onmessage = function (ev) {
       if (view !== 'lobby') return;
-      try { drawRack(JSON.parse(ev.data).devices); } catch (e) {}
+      try { drawRack(JSON.parse(ev.data).devices); heard('서버와 실시간 연결'); } catch (e) {}
     };
+    feed.onerror = function () { if (view === 'lobby') deaf(); };
   }
   function closeFeed() { if (feed) { feed.close(); feed = null; } }
 
@@ -86,7 +98,7 @@
       var b = el('button'); b.type = 'button';
       var handset = el('span', 'handset'), glass = el('span', 'glass');
       handset.setAttribute('aria-hidden', 'true');
-      glass.append(el('span', 'target')); handset.append(glass);
+      glass.append(el('span', 'ring'), el('span', 'busy-mark', '사용 중'), el('span', 'wait-mark')); handset.append(glass);
       var state = kind === 'mine' ? '내가 쓰는 중' : kind === 'idle' ? '비어 있어요'
         : kind === 'busy' ? (d.minutes ? d.minutes + '분째 사용 중' : '방금 사용을 시작했어요') : (d.note || '켜지는 중');
       var act = kind === 'mine' ? '이어서 쓰기' : kind === 'idle' ? '이 폰으로 해 보기' : kind === 'busy' ? '사용 중' : '준비 중';
@@ -103,8 +115,8 @@
   function pollLobby() {
     clearTimeout(timers.lobby);
     if (view !== 'lobby') return;
-    api('devices').then(function (r) { if (r.ok && view === 'lobby') drawRack(r.body.devices); })
-      .catch(function () { $('lobby-count').textContent = '체험 서버에 닿지 못하고 있어요.'; })
+    api('devices').then(function (r) { if (r.ok && view === 'lobby') { drawRack(r.body.devices); heard('서버와 실시간 연결'); } })
+      .catch(function () { $('lobby-count').textContent = '체험 서버에 닿지 못하고 있어요.'; deaf(); })
       .finally(function () { timers.lobby = setTimeout(pollLobby, 5000); });
   }
 
@@ -129,6 +141,7 @@
     $('bar-phone').textContent = '폰 ' + mine.n;
     $('idle-warn').hidden = true;
     cover.hidden = false; coverNote.textContent = '폰을 여는 중이에요';
+    lastFrames = null; showLink('기다리는 중', '–', '–', '–', false);
     run = -1; after = 0; steps = {}; guideState = 'idle'; tasksKey = ''; active = true;
     stepsBox.replaceChildren(); summary.hidden = true;
     runLine.textContent = '아직 시작한 안내가 없어요. 위에서 하나를 골라 보세요.';
@@ -196,11 +209,45 @@
     clearTimeout(timers.state);
     if (view !== 'session') return;
     var was = active; active = false;
-    api('state?active=' + (was ? 1 : 0)).then(function (r) { misses = 0; if (lost(r)) return; if (r.ok) showState(r.body); })
+    api('state?active=' + (was ? 1 : 0)).then(function (r) {
+      misses = 0; if (lost(r)) return;
+      if (r.ok) { showState(r.body); heard('서버와 실시간 연결'); }
+    })
       // 한두 번 닿지 못한 것으로 폰 화면을 가리지 않습니다. 폰 화면은 서버와 따로 이어져 있습니다.
-      .catch(function () { if (++misses >= 4) { cover.hidden = false; coverNote.textContent = '체험 서버에 닿지 못하고 있어요'; } })
+      .catch(function () { if (++misses >= 4) { cover.hidden = false; coverNote.textContent = '체험 서버에 닿지 못하고 있어요'; deaf(); } })
       .finally(function () { if (view === 'session') timers.state = setTimeout(pollState, 3000); });
   }
+
+  // 폰 화면 아래의 숫자: 끼워 넣은 폰 화면(같은 주소의 페이지)이 연 WebRTC 연결의 통계를 1초마다 읽습니다.
+  // 녹화가 아니라 지금 받고 있는 화면이라는 것을 숫자로 보여 줍니다: 초당 장 수, 해상도, 폰까지의 왕복 시간.
+  var link = $('link'), lastFrames = null, lastAt = 0;
+  function showLink(state, fps, size, rtt, flowing) {
+    $('link-state').textContent = state; $('link-fps').textContent = fps; $('link-size').textContent = size; $('link-rtt').textContent = rtt;
+    link.classList.toggle('flowing', !!flowing);
+  }
+  function readLink() {
+    if (view !== 'session') return;
+    var pcs; try { pcs = frame.contentWindow && frame.contentWindow.__pcs; } catch (e) { pcs = null; }
+    if (!pcs || !pcs.length) { showLink(loaded ? '연결하는 중' : '기다리는 중', '–', '–', '–', false); return; }
+    var pc = pcs[pcs.length - 1];
+    pc.getStats().then(function (st) {
+      var v = null, pair = null;
+      st.forEach(function (r) {
+        if (r.type === 'inbound-rtp' && r.kind === 'video') v = r;
+        if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r;
+      });
+      if (!v || !v.framesDecoded) { showLink('연결하는 중', '–', '–', '–', false); return; }
+      var now = performance.now(), fps = v.framesPerSecond;
+      if (fps == null && lastFrames != null && now > lastAt) fps = (v.framesDecoded - lastFrames) * 1000 / (now - lastAt);
+      var moving = lastFrames == null || v.framesDecoded > lastFrames;
+      lastFrames = v.framesDecoded; lastAt = now;
+      var rtt = pair && pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) + 'ms' : '–';
+      // 화면이 그대로면 폰은 새 장을 보내지 않습니다. 그때는 0장이어도 연결은 살아 있습니다.
+      showLink(pc.connectionState === 'connected' ? '실시간' : '다시 잇는 중', fps != null ? Math.round(fps) + '장' : '–',
+        v.frameWidth ? v.frameWidth + '×' + v.frameHeight : '–', rtt, pc.connectionState === 'connected' && (moving || fps === 0));
+    }).catch(function () {});
+  }
+  setInterval(readLink, 1000);
 
   // 페이지나 폰 화면을 누르거나 키를 치면 "쓰고 있다"고 서버에 알립니다(다음 state 요청에 실어서).
   function touched() { active = true; }
@@ -219,6 +266,8 @@
 
   // ---------------------------------------------------------------- 안내 진행 기록
 
+  function face(name, alt) { var i = el('img'); i.src = 'img/haebomi-' + name + '.png'; i.alt = alt; i.width = 32; i.height = 32; return i; }
+
   function drawStep(s) {
     var li = steps[s.step];
     if (!li) {
@@ -231,7 +280,10 @@
     var end = s.kind === 'Terminal';
     var done = !!s.outcome || end;
     li.className = minor ? 'minor' : end ? 'end ok' : done ? 'ok' : 'now';
-    li.querySelector('.n').textContent = done && !minor ? '✓' : s.step;
+    var n = li.querySelector('.n');
+    if (end) n.replaceChildren(face('done', '다 했어요'));
+    else if (s.kind === 'Guide' && !done) n.replaceChildren(face('guide', '안내 중'));
+    else n.textContent = done && !minor ? '✓' : s.step;
     li.querySelector('.title').textContent = s.bubble || s.title || s.target || '안내를 준비하는 중';
     var sub = '';
     if (s.kind === 'Guide') sub = s.outcome === 'met' ? '직접 하신 것을 확인했어요' : s.outcome ? '다시 확인하는 중' : '폰 화면에 표시된 곳을 눌러 보세요';
