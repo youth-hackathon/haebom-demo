@@ -18,11 +18,10 @@ GCP VM `haebom-emu`에 이 저장소(`youth-hackathon/haebom-demo`)의 `docker c
 
 ## 받아야 하는 것
 
-작업을 시킨 사람에게 아래 네 가지를 받습니다. 받은 값은 VM의 파일에만 넣고, 저장소·커밋·로그·보고에 적지 않습니다.
+작업을 시킨 사람에게 아래 세 가지를 받습니다. 저장소는 공개라서 권한 없이 받습니다. 받은 값은 VM의 파일에만 넣고, 저장소·커밋·로그·보고에 적지 않습니다.
 
 | 무엇 | 어디에 넣는가 |
 |---|---|
-| 비공개 저장소 `youth-hackathon/haebom-demo`를 받을 권한(GitHub 토큰이나 배포 키). 없으면 받은 저장소 폴더를 VM으로 복사해도 됩니다 | VM의 git 설정 |
 | artemis의 키 파일. `haebom-artemis`의 `relay/.env`와 같은 내용(`LETSUR_API_KEY`, `OPENROUTER_API_KEY`와 그 파일에 있는 나머지 값) | `secrets/artemis.env` |
 | 음성 키. `TTS_ENGINE=gemini`와 `GEMINI_API_KEY=...` 두 줄 | `secrets/tts.env` |
 | 체험 페이지의 비밀번호 | `.env`의 `DEMO_PASSWORD` |
