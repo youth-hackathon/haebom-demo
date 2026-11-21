@@ -2,16 +2,17 @@
 # Cuttlefish 컨테이너의 시작 스크립트입니다.
 # 1) 이미지에 들어 있는 서비스(네트워크 브리지, operator, host orchestrator)를 띄웁니다.
 # 2) Android 이미지가 볼륨에 없으면 내려받습니다.
-# 3) 기기가 없으면 만들고, 있으면 다시 켭니다.
+# 3) 기기(CF_DEVICES 대)가 없으면 만들고, 있으면 다시 켭니다. 대수가 바뀌었으면 지우고 새로 만듭니다.
 # 4) 컨테이너가 멈출 때 기기를 끕니다.
 set -u
 
 BUILD_DIR=/cf/build
 ADB=/usr/lib/cuttlefish-common/bin/adb
-SERIAL=0.0.0.0:6520
 READY=/run/device-ready
 
 : "${CF_BUILD:=16968706/aosp_cf_x86_64_only_phone-userdebug}"
+# 기기 대수. 한 묶음(cvd_1) 안에 1번부터 만들어지고, adb 포트는 6520부터, 웹에서 부르는 이름은 cvd_1-1-1, cvd_1-2-2, ... 입니다.
+: "${CF_DEVICES:=1}"
 : "${CF_CPUS:=4}"
 : "${CF_MEMORY_MB:=4096}"
 : "${CF_WIDTH:=1080}"
@@ -60,82 +61,112 @@ fi
 # --vhost_user_vsock=true 를 주면 호스트 쪽 통신이 유닉스 소켓으로 바뀌어 이 제한을 피합니다.
 # cvd start 는 이전에 준 값을 기억하지 않으므로 만들 때와 다시 켤 때 같은 값을 줍니다.
 START_ARGS=(
+  --num_instances="$CF_DEVICES"
   --cpus="$CF_CPUS" --memory_mb="$CF_MEMORY_MB"
   --x_res="$CF_WIDTH" --y_res="$CF_HEIGHT" --dpi="$CF_DPI"
   --gpu_mode="$CF_GPU_MODE"
   --vhost_user_vsock=true
 )
 
+serials() { for n in $(seq 0 $((CF_DEVICES - 1))); do echo "0.0.0.0:$((6520 + n))"; done; }
+
 stop_device() {
   log "기기를 끕니다."
   rm -f "$READY"
   # cvd stop 은 가상 머신을 바로 끄므로, 그 전에 게스트의 쓰기를 디스크로 내립니다.
-  timeout 10 "$ADB" connect "$SERIAL" >/dev/null 2>&1
-  timeout 10 "$ADB" -s "$SERIAL" shell sync >/dev/null 2>&1
+  for s in $(serials); do
+    timeout 10 "$ADB" connect "$s" >/dev/null 2>&1
+    timeout 10 "$ADB" -s "$s" shell sync >/dev/null 2>&1
+  done
   cvd stop >/dev/null 2>&1
   exit 0
 }
 trap stop_device TERM INT
 
-if cvd fleet 2>/dev/null | grep -q '"group_name"'; then
-  log "기존 기기를 다시 켭니다."
+have=$(cvd fleet 2>/dev/null | grep -c '"instance_name"')
+if [ "$have" -gt 0 ] && [ "$have" -ne "$CF_DEVICES" ]; then
+  log "기기가 ${have}대 있는데 ${CF_DEVICES}대로 띄우라고 되어 있습니다. 지우고 새로 만듭니다."
+  cvd reset -y >/dev/null 2>&1
+  rm -rf /var/tmp/cvd/*
+  have=0
+fi
+if [ "$have" -gt 0 ]; then
+  log "기존 기기 ${have}대를 다시 켭니다."
   # 컨테이너가 강제로 죽었던 경우 기기 목록에 켜진 상태로 남아 있을 수 있습니다.
   cvd stop >/dev/null 2>&1
   cvd start "${START_ARGS[@]}" || { log "기기를 켜지 못했습니다."; exit 1; }
 else
-  log "기기를 새로 만듭니다."
-  cvd create --host_path="$BUILD_DIR" --product_path="$BUILD_DIR" "${START_ARGS[@]}" \
-    || { log "기기를 만들지 못했습니다."; exit 1; }
+  log "기기 ${CF_DEVICES}대를 새로 만듭니다."
+  cvd create --host_path="$BUILD_DIR" --product_path="$BUILD_DIR" "${START_ARGS[@]}"     || { log "기기를 만들지 못했습니다."; exit 1; }
 fi
 log "부팅이 끝났습니다."
 
-"$ADB" connect "$SERIAL" >/dev/null 2>&1
-"$ADB" -s "$SERIAL" wait-for-device
-
-# 시스템 언어는 userdata 에 남습니다. 값이 다를 때만 바꿉니다.
-if [ -n "$CF_LOCALE" ]; then
-  current=$("$ADB" -s "$SERIAL" shell cmd locale get-device-locale | tr -d '\r')
-  if [ "$current" != "$CF_LOCALE" ]; then
-    log "시스템 언어를 $current 에서 $CF_LOCALE 로 바꿉니다."
-    "$ADB" -s "$SERIAL" shell cmd locale set-device-locale "$CF_LOCALE"
-  fi
+# 한글 키보드 파일은 한 번만 받습니다(빌드 볼륨에 남겨 다시 받지 않습니다).
+KEYBOARD_APK=/cf/build/keyboard.apk
+if [ -n "$CF_KEYBOARD_URL" ] && ! echo "$CF_KEYBOARD_SHA256  $KEYBOARD_APK" | sha256sum -c - >/dev/null 2>&1; then
+  log "한글 키보드를 내려받습니다."
+  curl -fsSL -o "$KEYBOARD_APK" "$CF_KEYBOARD_URL" || log "키보드를 받지 못했습니다."
 fi
-# 한국 폰처럼: 시간대는 한국, 시계는 오전/오후, 아래 바는 버튼 세 개, 잠금 화면 없음. userdata 에 남으므로 값이 다를 때만 바꿉니다.
-if [ -n "$CF_TIMEZONE" ]; then
-  current=$("$ADB" -s "$SERIAL" shell getprop persist.sys.timezone | tr -d '\r')
-  if [ "$current" != "$CF_TIMEZONE" ]; then
-    log "시간대를 $current 에서 $CF_TIMEZONE 로 바꿉니다."
-    "$ADB" -s "$SERIAL" shell settings put global auto_time_zone 0
-    "$ADB" -s "$SERIAL" shell su 0 cmd time_zone_detector suggest_manual_time_zone --zone_id "$CF_TIMEZONE" >/dev/null 2>&1
-  fi
-fi
-"$ADB" -s "$SERIAL" shell settings put system time_12_24 12
-"$ADB" -s "$SERIAL" shell cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.threebutton >/dev/null 2>&1
-"$ADB" -s "$SERIAL" shell locksettings set-disabled true >/dev/null 2>&1
 
-# 한글 키보드: 없으면 받아서 설치하고 기본 키보드로 둡니다. 가상 기기에는 하드웨어 키보드가 붙어 있어 화면 키보드가
-# 숨겨지므로 보이게 합니다. 받은 파일은 빌드 볼륨에 남겨 다시 받지 않습니다.
-if [ -n "$CF_KEYBOARD_URL" ]; then
-  if ! "$ADB" -s "$SERIAL" shell pm path "${CF_KEYBOARD_ID%%/*}" | grep -q "package:"; then
-    apk=/cf/build/keyboard.apk
-    if ! echo "$CF_KEYBOARD_SHA256  $apk" | sha256sum -c - >/dev/null 2>&1; then
-      log "한글 키보드를 내려받습니다."
-      curl -fsSL -o "$apk" "$CF_KEYBOARD_URL" || log "키보드를 받지 못했습니다."
-    fi
-    if echo "$CF_KEYBOARD_SHA256  $apk" | sha256sum -c - >/dev/null 2>&1; then
-      "$ADB" -s "$SERIAL" install -r "$apk" >/dev/null 2>&1 && log "한글 키보드를 설치했습니다."
-    else
-      log "키보드 파일의 체크섬이 다릅니다. 설치하지 않습니다."
+# 기기 한 대를 한국 폰처럼 맞춥니다.
+setup_one() {
+  local SERIAL="$1" current
+  # 붙을 때까지 다시 시도합니다. connect 가 한 번 실패한 채로 wait-for-device 를 부르면 끝없이 기다립니다.
+  for _ in $(seq 60); do
+    "$ADB" connect "$SERIAL" >/dev/null 2>&1
+    [ "$("$ADB" -s "$SERIAL" get-state 2>/dev/null)" = "device" ] && break
+    sleep 2
+  done
+  if [ "$("$ADB" -s "$SERIAL" get-state 2>/dev/null)" != "device" ]; then
+    log "[$SERIAL] adb 로 붙지 못했습니다. 이 기기는 한국어 설정을 건너뜁니다."
+    return 1
+  fi
+
+  # 시스템 언어는 userdata 에 남습니다. 값이 다를 때만 바꿉니다.
+  if [ -n "$CF_LOCALE" ]; then
+    current=$("$ADB" -s "$SERIAL" shell cmd locale get-device-locale | tr -d '\r')
+    if [ "$current" != "$CF_LOCALE" ]; then
+      log "[$SERIAL] 시스템 언어를 $current 에서 $CF_LOCALE 로 바꿉니다."
+      "$ADB" -s "$SERIAL" shell cmd locale set-device-locale "$CF_LOCALE"
     fi
   fi
-  "$ADB" -s "$SERIAL" shell ime enable "$CF_KEYBOARD_ID" >/dev/null 2>&1
-  "$ADB" -s "$SERIAL" shell ime set "$CF_KEYBOARD_ID" >/dev/null 2>&1
-  "$ADB" -s "$SERIAL" shell settings put secure show_ime_with_hard_keyboard 1
-fi
+  # 한국 폰처럼: 시간대는 한국, 시계는 오전/오후, 아래 바는 버튼 세 개, 잠금 화면 없음. userdata 에 남으므로 값이 다를 때만 바꿉니다.
+  if [ -n "$CF_TIMEZONE" ]; then
+    current=$("$ADB" -s "$SERIAL" shell getprop persist.sys.timezone | tr -d '\r')
+    if [ "$current" != "$CF_TIMEZONE" ]; then
+      log "[$SERIAL] 시간대를 $current 에서 $CF_TIMEZONE 로 바꿉니다."
+      "$ADB" -s "$SERIAL" shell settings put global auto_time_zone 0
+      "$ADB" -s "$SERIAL" shell su 0 cmd time_zone_detector suggest_manual_time_zone --zone_id "$CF_TIMEZONE" >/dev/null 2>&1
+    fi
+  fi
+  "$ADB" -s "$SERIAL" shell settings put system time_12_24 12
+  "$ADB" -s "$SERIAL" shell cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.threebutton >/dev/null 2>&1
+  "$ADB" -s "$SERIAL" shell locksettings set-disabled true >/dev/null 2>&1
+
+  # 한글 키보드: 없으면 받아서 설치하고 기본 키보드로 둡니다. 가상 기기에는 하드웨어 키보드가 붙어 있어 화면 키보드가
+  # 숨겨지므로 보이게 합니다. 받은 파일은 빌드 볼륨에 남겨 다시 받지 않습니다.
+  if [ -n "$CF_KEYBOARD_URL" ]; then
+    if ! "$ADB" -s "$SERIAL" shell pm path "${CF_KEYBOARD_ID%%/*}" | grep -q "package:"; then
+      if echo "$CF_KEYBOARD_SHA256  $KEYBOARD_APK" | sha256sum -c - >/dev/null 2>&1; then
+        "$ADB" -s "$SERIAL" install -r "$KEYBOARD_APK" >/dev/null 2>&1 && log "[$SERIAL] 한글 키보드를 설치했습니다."
+      else
+        log "[$SERIAL] 키보드 파일의 체크섬이 다릅니다. 설치하지 않습니다."
+      fi
+    fi
+    "$ADB" -s "$SERIAL" shell ime enable "$CF_KEYBOARD_ID" >/dev/null 2>&1
+    "$ADB" -s "$SERIAL" shell ime set "$CF_KEYBOARD_ID" >/dev/null 2>&1
+    "$ADB" -s "$SERIAL" shell settings put secure show_ime_with_hard_keyboard 1
+  fi
+}
+
+# adb 서버를 먼저 띄웁니다. 여러 기기를 한꺼번에 맞출 때 서버를 서로 띄우려다 connect 가 실패하지 않게 합니다.
+"$ADB" start-server >/dev/null 2>&1
+for s in $(serials); do setup_one "$s" & done
+wait
 "$ADB" kill-server >/dev/null 2>&1
 
 touch "$READY"
-log "준비되었습니다. 호스트에서 adb connect 127.0.0.1:6520 으로 붙으십시오."
+log "기기 ${CF_DEVICES}대가 준비되었습니다. 호스트에서 adb connect 127.0.0.1:6520 (둘째부터 6521, 6522, ...) 으로 붙으십시오."
 
 tail -f /dev/null &
 wait $!
