@@ -18,6 +18,8 @@ READY=/run/device-ready
 : "${CF_WIDTH:=1080}"
 : "${CF_HEIGHT:=2400}"
 : "${CF_DPI:=420}"
+# 화면 주사율. 화면을 CPU로 그리므로(guest_swiftshader) 낮출수록 폰이 가볍습니다.
+: "${CF_FPS:=30}"
 : "${CF_GPU_MODE:=guest_swiftshader}"
 : "${CF_LOCALE:=ko-KR}"
 : "${CF_TIMEZONE:=Asia/Seoul}"
@@ -63,7 +65,7 @@ fi
 START_ARGS=(
   --num_instances="$CF_DEVICES"
   --cpus="$CF_CPUS" --memory_mb="$CF_MEMORY_MB"
-  --x_res="$CF_WIDTH" --y_res="$CF_HEIGHT" --dpi="$CF_DPI"
+  --x_res="$CF_WIDTH" --y_res="$CF_HEIGHT" --dpi="$CF_DPI" --refresh_rate_hz="$CF_FPS"
   --gpu_mode="$CF_GPU_MODE"
   --vhost_user_vsock=true
 )

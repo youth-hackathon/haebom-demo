@@ -37,7 +37,9 @@ services:
         echo "커널 모듈 준비 완료"
 
   # Android 가상 기기 CF_DEVICES 대(Cuttlefish, 기본 4대). 처음 켤 때 Android 이미지를 받습니다(약 2GB).
-  # 한 대에 CPU CF_CPUS 개와 메모리 CF_MEMORY_MB 를 줍니다. 4대면 CPU 16개, 메모리 16GB 가 넉넉합니다.
+  # 폰의 속도는 CPU가 정합니다: 화면을 GPU 없이 CPU로 그립니다. 그래서 한 대에 CPU를 넉넉히 주고(쉬는 폰은 거의
+  # 쓰지 않으므로 합이 호스트의 CPU 수를 넘어도 됩니다), 해상도와 주사율을 낮춰 그릴 양을 줄입니다.
+  # 540x1200 에 dpi 210 은 720x1600 에 dpi 280 과 화면 배치가 같습니다(둘 다 411dp 폭).
   # 켤 때마다 한국 폰처럼 맞춥니다: 한국어, 한국 시간, 버튼 세 개짜리 바, 한글 키보드 (device/entrypoint.sh).
   device:
     # cuttlefish-orchestration:stable 의 2026-11-21 시점 digest (호스트 패키지 1.57.15)
@@ -50,11 +52,12 @@ services:
     environment:
       CF_BUILD: ${CF_BUILD:-16968706/aosp_cf_x86_64_only_phone-userdebug}
       CF_DEVICES: ${CF_DEVICES:-4}
-      CF_CPUS: ${CF_CPUS:-4}
+      CF_CPUS: ${CF_CPUS:-8}
       CF_MEMORY_MB: ${CF_MEMORY_MB:-4096}
-      CF_WIDTH: ${CF_WIDTH:-720}
-      CF_HEIGHT: ${CF_HEIGHT:-1600}
-      CF_DPI: ${CF_DPI:-280}
+      CF_WIDTH: ${CF_WIDTH:-540}
+      CF_HEIGHT: ${CF_HEIGHT:-1200}
+      CF_DPI: ${CF_DPI:-210}
+      CF_FPS: ${CF_FPS:-30}
       CF_GPU_MODE: ${CF_GPU_MODE:-guest_swiftshader}
       CF_LOCALE: ${CF_LOCALE:-ko-KR}
       CF_TIMEZONE: ${CF_TIMEZONE:-Asia/Seoul}
@@ -78,7 +81,8 @@ services:
       start_period: 30m
     restart: unless-stopped
 
-  # 화면 상태를 받아 다음 동작 하나를 고르는 서버 (haebom-artemis, baseline). 모델 키가 있어야 합니다.
+  # 화면 상태를 받아 다음 동작 하나를 고르는 서버 (haebom-artemis). jev 방식으로 답합니다: 누를 곳은 Jev가 고르고
+  # (단계에 1초 안팎), 글자 입력처럼 Jev가 못 하는 단계만 LLM이 답합니다. Jev는 OPENROUTER_API_KEY, LLM은 LETSUR_API_KEY 가 있어야 합니다.
   artemis:
     build:
       context: https://github.com/youth-hackathon/haebom-artemis.git#main
@@ -90,7 +94,13 @@ services:
     dns: [8.8.8.8, 1.1.1.1]
     environment:
       GUIDE_PROFILE: ${GUIDE_PROFILE:-artemis}
-      GUIDE_MODE: baseline
+      GUIDE_MODE: ${GUIDE_MODE:-jev}
+      GUIDE_JEV_FALLBACK: ${GUIDE_JEV_FALLBACK:-baseline}
+      GUIDE_JEV_ROUTE_P: ${GUIDE_JEV_ROUTE_P:-0.5}
+      GUIDE_JEV_MIN_P: ${GUIDE_JEV_MIN_P:-0}
+      GUIDE_JEV_DESIGN: ${GUIDE_JEV_DESIGN:-split}
+      GUIDE_JEV_MODEL: ${GUIDE_JEV_MODEL:-typesafe/jev-1.14}
+      GUIDE_JEV_BOX: ${GUIDE_JEV_BOX:-off}
       GUIDE_CLI_TIMEOUT: "55"
       GUIDE_SUMMARY_WORKERS: "2"
       GUIDE_LOG_SHOTS: "off"
@@ -139,13 +149,17 @@ services:
       FRONT_URL: http://front:8770
       TTS_URL: http://tts:8766
       RELAYS: 8770=front:8770,8766=tts:8766
+      # 앱이 안내 서버에 청하는 방식. 매뉴얼에 없는 요청이 artemis로 갈 때 이 방식으로 답합니다.
+      APP_GUIDE_MODE: ${APP_GUIDE_MODE:-jev}
       # 앱이 볼 음성 서버. 비우면 이 compose 의 tts 를 봅니다. 다른 곳에 띄운 서버를 쓰려면 그 주소를 넣습니다
       # (주소 끝에 비밀 문자열이 있을 수 있으므로 .env 에만 적습니다).
       APP_TTS_BASE: ${APP_TTS_BASE:-}
       APP_TTS_STREAM: ${APP_TTS_STREAM:-true}
-      # 폰을 회수하는 때: 아무것도 누르지 않은 시간(초), 페이지에서 소식이 끊긴 시간(초)
-      LEASE_IDLE_S: ${LEASE_IDLE_S:-180}
-      LEASE_SEEN_S: ${LEASE_SEEN_S:-25}
+      # 잠금이 풀리는 때: 아무것도 누르지 않은 시간(초), 페이지가 닫힌 뒤의 시간(초)
+      LEASE_IDLE_S: ${LEASE_IDLE_S:-600}
+      LEASE_SEEN_S: ${LEASE_SEEN_S:-30}
+    volumes:
+      - api-data:/data            # 누가 어느 폰을 쓰는지. 이 서버를 다시 띄워도 잠금이 남습니다
     depends_on: [front, tts]
     restart: unless-stopped
 
@@ -164,6 +178,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  api-data:
   artemis-data:
   cf-build:
     name: ${CF_BUILD_VOLUME:-haebom-demo_cf-build}
