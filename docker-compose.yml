@@ -171,6 +171,9 @@ services:
       # 비밀번호. 비우면 걸지 않습니다. 밖으로 열 때는 반드시 넣습니다.
       DEMO_PASSWORD: ${DEMO_PASSWORD:-}
       DEMO_USER: ${DEMO_USER:-haebom}
+    volumes:
+      # https 인증서 자리. cert.pem 과 key.pem 을 넣어 두면 그것을 쓰고, 비어 있으면 자체 서명한 것을 만들어 넣습니다.
+      - ${TLS_DIR:-./secrets/tls}:/etc/nginx/tls
     ports:
       - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-6080}:80"
       - "${WEB_BIND:-127.0.0.1}:${WEB_TLS_PORT:-6443}:443"

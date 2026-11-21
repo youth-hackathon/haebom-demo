@@ -5,8 +5,8 @@
     GET  /devices   폰 목록과 상태: 비어 있음 / 사용 중 / 켜지는 중, 그리고 내가 쓰는 폰
     GET  /devices/stream   같은 목록을 바뀔 때마다 밀어 준다 (server-sent events)
     GET  /hold      폰을 쓰는 페이지가 열어 두는 연결. 이 연결이 살아 있는 동안 그 폰은 잠겨 있다
-    POST /claim     {"device": "cvd_1-1-1"}  그 폰을 내 것으로. 폰은 처음 상태로 돌아가고 해봄 앱이 떠 있는 채로 열린다
-    POST /release   폰을 반납한다
+    POST /claim     {"device": "cvd_1-1-1"}  그 폰을 내 것으로. 바로 열린다(폰은 이미 처음 상태이고 해봄 앱이 떠 있다)
+    POST /release   폰을 반납한다. 서버는 그 폰을 처음 상태로 돌린 뒤에 다시 내놓는다
     GET  /state     내 폰의 준비 상태, 폰의 실제 값(글자 크기, 켜진 알람), 반납까지 남은 시간
     GET  /events    내 폰에서 진행되는 안내를 순서대로. ?after=<번호> 뒤의 것만
     POST /start     {"task": "글자 크기 키우기"}  안내를 시작한다
@@ -24,6 +24,10 @@
 - IDLE_S 동안 아무 조작이 없을 때. 페이지에 1분 전부터 알림이 뜨고, 누르면 이어진다.
 "조작"은 세 군데서 본다: 페이지가 알려 주는 누름과 키, 폰이 스스로 적는 마지막 입력 시각(dumpsys power), 앱이 남기는 안내 진행.
 폰을 만지고 있는 사람에게서 폰을 가져가는 일이 없게 하려는 것이다.
+
+폰은 처음 상태로 돌려 둔 채 기다린다. 고르는 사람이 기다리지 않게 하려는 것이다. 처음 상태로 돌리는 일(안내 멈춤, 쓰던 앱 끄기,
+글자 크기 1.0, 알람 지우기, 해봄 앱의 기록 지우기, 해봄 앱 띄우기)은 폰이 켜졌을 때 한 번, 그리고 반납될 때마다 한다.
+그 일이 끝나기 전의 폰은 고를 수 없다("정리하는 중").
 
 이 서버가 계속하는 일:
 - 폰 찾기: Cuttlefish operator가 알려 주는 기기 목록을 읽는다.
@@ -248,6 +252,8 @@ class Phone:
         self.since = self.last_seen = self.last_active = 0.0
         self.preparing = False
         self.input_mark = ""                      # the phone's last-input time when it was last read
+        self.clean = False                        # reset and not used since: only such a phone is offered
+        self.cleaning = False                     # being reset now
 
     # ---- adb
 
@@ -277,9 +283,15 @@ class Phone:
         if SERVICE not in enabled:
             value = SERVICE if not others else f"{others}:{SERVICE}"
             self.sh(f"settings put secure enabled_accessibility_services {quote(value)}; settings put secure accessibility_enabled 1", 8)
-        # the setting alone is not the service running: wait until the system has bound it
+        # The setting alone is not the service running: wait until the system has bound it. The system lists bound
+        # services by their label, not their package, so "bound" is read as: ours is enabled, something is bound, and
+        # ours is not among those still being bound.
         for _ in range(20):
-            if re.search(r"Bound services:\{[^\n]*" + re.escape(PKG), self.adb("shell", "dumpsys accessibility", timeout=10)):
+            dump = self.adb("shell", "dumpsys accessibility", timeout=10)
+            enabled_now = re.search(r"Enabled services:\{([^\n]*)", dump)
+            binding = re.search(r"Binding services:\{([^\n]*)", dump)
+            if (enabled_now and SERVICE in enabled_now.group(1) and "Bound services:{Service[" in dump
+                    and not (binding and PKG in binding.group(1))):
                 return True
             time.sleep(0.5)
         return False
@@ -362,6 +374,9 @@ class Phone:
                     self.note = f"확인 실패: {exc}"
                 finally:
                     self.work.release()
+            # up and nobody's, but not reset yet (it has just come up, or the last reset failed): reset it now
+            if self.ready and not self.clean and not self.cleaning and not self.holder:
+                threading.Thread(target=make_clean, args=(self,), daemon=True).start()
             time.sleep(4 if self.note == READY else 2)
 
     def read_log(self) -> None:
@@ -429,12 +444,6 @@ class Phone:
             self.sh(f"input keyevent KEYCODE_WAKEUP; input keyevent KEYCODE_HOME; am start -n {PKG}/.MainActivity", 15)
             self.events.clear()
 
-    def tidy(self) -> None:
-        """After a visitor: stop the guide and leave the home screen up. The full reset is done for the next visitor."""
-        with self.work:
-            self.stop()
-            self.sh("input keyevent KEYCODE_HOME")
-            self.events.clear()
 
 
 # ---------------------------------------------------------------- the phones, and who has which
@@ -507,9 +516,29 @@ def holder_of(token: str) -> Phone | None:
 def take_back(phone: Phone, why: str) -> None:
     """LEASES is held. The phone is free again; the page that had it learns why at its next question."""
     ENDED[phone.holder] = (why, time.time())
-    phone.holder, phone.preparing = "", False
+    phone.holder, phone.preparing, phone.clean = "", False, False
     save_leases()
-    threading.Thread(target=phone.tidy, daemon=True).start()
+    threading.Thread(target=make_clean, args=(phone,), daemon=True).start()
+    ring()
+
+
+def make_clean(phone: Phone) -> None:
+    """Back to the first state, with the 해봄 app in front. Done when a phone comes up and each time one is given back,
+    so that the next visitor gets a phone at once. Until it is done the phone is not offered."""
+    with LEASES:
+        if phone.cleaning or phone.holder:
+            return
+        phone.cleaning = True
+    ok = False
+    try:
+        phone.reset()
+        ok = phone.service
+    except Exception as exc:  # noqa: BLE001
+        print(f"[demo-api] phone {phone.n}: reset failed: {exc}", flush=True)
+    with LEASES:
+        phone.cleaning = False
+        if ok and not phone.holder:
+            phone.clean = True
     ring()
 
 
@@ -557,10 +586,10 @@ def devices(token: str) -> dict:
     with LEASES:
         for p in sorted(PHONES.values(), key=lambda p: p.n):
             mine = bool(token) and p.holder == token
-            state = "busy" if p.holder else ("idle" if p.ready else "offline")
+            state = "busy" if p.holder else ("idle" if p.ready and p.clean else "offline")
+            note = "" if state != "offline" else ("다음 분을 위해 정리하는 중" if p.ready else p.note)
             rows.append({"id": p.id, "n": p.n, "state": state, "mine": mine,
-                         "minutes": int((now - p.since) // 60) if p.holder else 0,
-                         "note": "" if p.ready else p.note})
+                         "minutes": int((now - p.since) // 60) if p.holder else 0, "note": note})
     for n in range(len(rows) + 1, EXPECT + 1):  # not found yet: the device container is still starting them
         rows.append({"id": "", "n": n, "state": "offline", "mine": False, "minutes": 0, "note": "켜지는 중"})
     return {"devices": rows, "idle_limit": IDLE_S}
@@ -575,30 +604,18 @@ def claim(pid: str, token: str) -> tuple[int, dict, str]:
             return 200, {"ok": True, "device": phone.id, "n": phone.n}, token  # mine already: come back in
         if phone.holder:
             return 409, {"error": "방금 다른 분이 이 폰을 골랐어요. 다른 폰을 골라 주세요."}, ""
-        if not phone.ready:
-            return 503, {"error": "이 폰은 아직 켜지는 중이에요."}, ""
+        if not phone.ready or not phone.clean:
+            return 503, {"error": "이 폰은 아직 준비 중이에요. 잠시 뒤에 다시 골라 주세요."}, ""
         other = holder_of(token)
         if other is not None:
             take_back(other, "moved")
         now = time.time()
         new = secrets.token_urlsafe(24)
-        phone.holder, phone.preparing, phone.input_mark = new, True, ""
+        # the phone was reset when it came up or when it was last given back: it opens at once
+        phone.holder, phone.preparing, phone.clean, phone.input_mark = new, False, False, ""
         phone.since = phone.last_seen = phone.last_active = now
         save_leases()
     ring()
-
-    def prepare() -> None:
-        try:
-            phone.reset()
-        except Exception as exc:  # noqa: BLE001
-            print(f"[demo-api] phone {phone.n}: reset failed: {exc}", flush=True)
-        with LEASES:
-            if phone.holder == new:
-                phone.preparing = False
-                phone.last_active = time.time()
-        ring()
-
-    threading.Thread(target=prepare, daemon=True).start()
     return 200, {"ok": True, "device": phone.id, "n": phone.n}, new
 
 

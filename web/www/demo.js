@@ -128,7 +128,7 @@
     lobby.hidden = true; session.hidden = false;
     $('bar-phone').textContent = '폰 ' + mine.n;
     $('idle-warn').hidden = true;
-    cover.hidden = false; coverNote.textContent = '폰을 처음 상태로 돌리는 중이에요';
+    cover.hidden = false; coverNote.textContent = '폰을 여는 중이에요';
     run = -1; after = 0; steps = {}; guideState = 'idle'; tasksKey = ''; active = true;
     stepsBox.replaceChildren(); summary.hidden = true;
     runLine.textContent = '아직 시작한 안내가 없어요. 위에서 하나를 골라 보세요.';
